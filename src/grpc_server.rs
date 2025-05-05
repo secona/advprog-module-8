@@ -1,10 +1,11 @@
+use services::chat_service_server::{ChatService, ChatServiceServer};
 use services::payment_service_server::{PaymentService, PaymentServiceServer};
 use services::transaction_service_server::{TransactionService, TransactionServiceServer};
-use services::{PaymentRequest, PaymentResponse, TransactionRequest, TransactionResponse};
+use services::{ChatMessage, PaymentRequest, PaymentResponse, TransactionRequest, TransactionResponse};
 use tokio::sync::mpsc;
 use tokio::time;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Request, Response, Status};
+use tonic::{Request, Response, Status, Streaming};
 use tonic::transport::Server;
 
 pub mod services {
@@ -60,15 +61,48 @@ impl TransactionService for MyTransactionService {
     }
 }
 
+#[derive(Default)]
+pub struct MyChatService;
+
+#[tonic::async_trait]
+impl ChatService for MyChatService {
+    type ChatStream = ReceiverStream<Result<ChatMessage, Status>>;
+
+    async fn chat(
+        &self, 
+        request: Request<Streaming<ChatMessage>>
+    ) -> Result<Response<Self::ChatStream>, Status> {
+        let mut stream = request.into_inner();
+        let (tx, rx) = mpsc::channel(10);
+
+        tokio::spawn(async move {
+            while let Some(message) = stream.message().await.unwrap_or(None) {
+                println!("Received Message: {:?}", message);
+
+                let reply = ChatMessage {
+                    user_id: message.user_id.clone(),
+                    message: format!("Pesan Anda akan dibalas pada jam kerja. Pesan Anda: {}", message.message),
+                };
+
+                let _ = tx.send(Ok(reply)).await;
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "[::1]:50051".parse()?;
     let payment_service = MyPaymentService;
     let transaction_service = MyTransactionService;
+    let chat_service = MyChatService;
 
     Server::builder()
         .add_service(PaymentServiceServer::new(payment_service))
         .add_service(TransactionServiceServer::new(transaction_service))
+        .add_service(ChatServiceServer::new(chat_service))
         .serve(addr)
         .await?;
 
